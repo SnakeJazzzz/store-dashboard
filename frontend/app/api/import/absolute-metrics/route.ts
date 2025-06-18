@@ -1,6 +1,6 @@
 // app/api/import/absolute-metrics/route.ts
 import { NextRequest, NextResponse } from 'next/server'
-import { supabase } from '../../../lib/supabaseClient'
+import { createClient } from '@supabase/supabase-js'
 
 interface CSVRow {
   [key: string]: string
@@ -29,10 +29,35 @@ interface ProcessedAbsoluteMetrics {
 
 export async function POST(request: NextRequest) {
   try {
-    // Get user from session
+    // Get auth header
     const authHeader = request.headers.get('authorization')
     if (!authHeader) {
       return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+    }
+
+    const userToken = authHeader.replace('Bearer ', '')
+
+    // Create Supabase client with user's token
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      },
+      global: {
+        headers: {
+          Authorization: `Bearer ${userToken}`
+        }
+      }
+    })
+
+    // Now get user with the token
+    const { data: { user }, error: authError } = await supabase.auth.getUser(userToken)
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Usuario no válido' }, { status: 401 })
     }
 
     // Parse request body
@@ -41,15 +66,6 @@ export async function POST(request: NextRequest) {
 
     if (!csvData || !csvData.headers || !csvData.fullData) {
       return NextResponse.json({ error: 'Datos CSV inválidos' }, { status: 400 })
-    }
-
-    // Get current user
-    const { data: { user }, error: authError } = await supabase.auth.getUser(
-      authHeader.replace('Bearer ', '')
-    )
-
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Usuario no válido' }, { status: 401 })
     }
 
     const headers = csvData.headers
