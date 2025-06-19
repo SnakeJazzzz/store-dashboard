@@ -1,20 +1,35 @@
 // app/api/stores/route.ts
 import { NextRequest, NextResponse } from 'next/server'
-import { supabase } from '../../lib/supabaseClient'
-
+import { createClient } from '@supabase/supabase-js'
 
 export async function GET(request: NextRequest) {
   try {
-    // Get user from session
+    // Get auth header
     const authHeader = request.headers.get('authorization')
     if (!authHeader) {
       return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
     }
 
+    const userToken = authHeader.replace('Bearer ', '')
+
+    // Create Supabase client with user's token for RLS
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      },
+      global: {
+        headers: {
+          Authorization: `Bearer ${userToken}`
+        }
+      }
+    })
+
     // Get current user
-    const { data: { user }, error: authError } = await supabase.auth.getUser(
-      authHeader.replace('Bearer ', '')
-    )
+    const { data: { user }, error: authError } = await supabase.auth.getUser(userToken)
 
     if (authError || !user) {
       return NextResponse.json({ error: 'Usuario no válido' }, { status: 401 })
@@ -22,23 +37,39 @@ export async function GET(request: NextRequest) {
 
     // Parse query parameters
     const url = new URL(request.url)
-    const format = url.searchParams.get('format') || 'growth' // 'growth' or 'absolute'
+    const format = url.searchParams.get('format') || 'growth'
     const estado = url.searchParams.get('estado')
     const formato = url.searchParams.get('formato')
     const zona = url.searchParams.get('zona')
     const distrito = url.searchParams.get('distrito')
 
+    // Query stores with RLS automatically filtering by user
     let query = supabase
-      .from(format === 'growth' ? 'stores_with_latest_growth' : 'stores_with_latest_absolute')
-      .select('*')
-      .eq('user_id', user.id)
+      .from('stores')
+      .select(`
+        id,
+        suc_sap,
+        sucursal,
+        format,
+        zona,
+        distrito,
+        estado,
+        municipio,
+        ciudad,
+        calle,
+        colonia,
+        cp,
+        lat,
+        lon,
+        created_at
+      `)
 
     // Apply filters
     if (estado) {
       query = query.eq('estado', estado)
     }
     if (formato) {
-      query = query.eq('formato', formato)
+      query = query.eq('format', formato)
     }
     if (zona) {
       query = query.eq('zona', zona)
@@ -54,12 +85,12 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Error al obtener tiendas' }, { status: 500 })
     }
 
-    // Transform data for map visualization
+    // Transform data for frontend
     const transformedStores = stores?.map(store => ({
       id: store.id,
       suc_sap: store.suc_sap,
       sucursal: store.sucursal,
-      formato: store.formato,
+      formato: store.format,           // DB 'format' → Frontend 'formato'
       zona: store.zona,
       distrito: store.distrito,
       estado: store.estado,
@@ -67,21 +98,19 @@ export async function GET(request: NextRequest) {
       ciudad: store.ciudad,
       calle: store.calle,
       colonia: store.colonia,
+      cp: store.cp,
       lat: store.lat,
       lon: store.lon,
-      // Include metrics based on format
-      ...(format === 'growth' ? {
-        revenue_growth_pct: store.revenue_growth_pct,
-        orders_growth_pct: store.orders_growth_pct,
-        ticket_growth_pct: store.ticket_growth_pct,
-        year_comparison: store.year_comparison,
-        metric_period: store.metric_period
-      } : {
-        ventas: store.ventas,
-        ordenes: store.ordenes,
-        tickets: store.tickets,
-        metric_period: store.metric_period
-      })
+      created_at: store.created_at,
+      // Metrics set to null for now (will be added later)
+      revenue_growth_pct: null,
+      orders_growth_pct: null,
+      ticket_growth_pct: null,
+      year_comparison: null,
+      metric_period: null,
+      ventas: null,
+      ordenes: null,
+      tickets: null
     })) || []
 
     return NextResponse.json({
