@@ -12,6 +12,8 @@ interface ProcessedStore {
   zona: string
   distrito: string
   sucursal: string
+  calle: string
+  colonia: string
   estado: string
   municipio: string
   ciudad: string
@@ -70,11 +72,19 @@ export async function POST(request: NextRequest) {
 
     // Find column indices
     const getColumnIndex = (searchTerms: string[]) => {
-      return headers.findIndex((header: string) => 
+      const index = headers.findIndex((header: string) => 
         searchTerms.some(term => 
-          header.toLowerCase().includes(term.toLowerCase())
+          header.toLowerCase().trim().includes(term.toLowerCase())
         )
       )
+      
+      // Debug log para verificar detección
+      console.log(`Searching for ${searchTerms.join('|')}: found at index ${index}`)
+      if (index !== -1) {
+        console.log(`  -> Header found: "${headers[index]}"`)
+      }
+      
+      return index
     }
 
     const columnIndices = {
@@ -83,6 +93,8 @@ export async function POST(request: NextRequest) {
       distrito: getColumnIndex(['distrito']),
       suc_sap: getColumnIndex(['suc', 'sap']),
       sucursal: getColumnIndex(['sucursal']),
+      calle: getColumnIndex(['calle', 'direccion', 'address']),
+      colonia: getColumnIndex(['colonia', 'col']),
       municipio: getColumnIndex(['municipio']),
       estado: getColumnIndex(['estado']),
       ciudad: getColumnIndex(['ciudad']),
@@ -91,6 +103,14 @@ export async function POST(request: NextRequest) {
       ordenes: getColumnIndex(['ordenes', 'orders']),
       tickets: getColumnIndex(['tickets', 'ticket'])
     }
+
+    // Debug: Verificar detección de columnas importantes
+    console.log('=== COLUMN DETECTION DEBUG ===')
+    console.log('Headers:', headers)
+    console.log('columnIndices.calle:', columnIndices.calle)
+    console.log('columnIndices.colonia:', columnIndices.colonia)
+    console.log('columnIndices.suc_sap:', columnIndices.suc_sap)
+    console.log('===============================')
 
     // Validate required columns exist
     const requiredColumns = ['suc_sap', 'formato', 'estado', 'sucursal']
@@ -142,6 +162,8 @@ export async function POST(request: NextRequest) {
       zona: string;
       distrito: string;
       sucursal: string;
+      calle: string;
+      colonia: string;
       estado: string;
       municipio: string;
       ciudad: string;
@@ -191,10 +213,28 @@ export async function POST(request: NextRequest) {
           zona: safeTruncate(row[columnIndices.zona] || '', 50),
           distrito: safeTruncate(row[columnIndices.distrito] || '', 50),
           sucursal: safeTruncate(row[columnIndices.sucursal] || '', 255), // text field - longer
+          calle: safeTruncate(row[columnIndices.calle] || '', 255),
+          colonia: safeTruncate(row[columnIndices.colonia] || '', 100),
           estado: safeTruncate(row[columnIndices.estado] || '', 50),
           municipio: safeTruncate(row[columnIndices.municipio] || '', 50),
           ciudad: safeTruncate(row[columnIndices.ciudad] || '', 50),
           cp: safeTruncate(row[columnIndices.cp] || '', 10) // Likely the 10-char limit field
+        }
+
+        // Debug: Verificar extracción de datos de las primeras filas
+        if (i < 3) {
+          console.log(`=== ROW ${i + 1} DATA EXTRACTION DEBUG ===`)
+          console.log('Raw row data:', row)
+          console.log('Row length:', row.length)
+          console.log('columnIndices.calle:', columnIndices.calle)
+          console.log('columnIndices.colonia:', columnIndices.colonia)
+          console.log('Raw calle value:', `"${row[columnIndices.calle]}"`)
+          console.log('Raw colonia value:', `"${row[columnIndices.colonia]}"`)
+          console.log('Processed calle:', `"${storeData.calle}"`)
+          console.log('Processed colonia:', `"${storeData.colonia}"`)
+          console.log('storeData keys:', Object.keys(storeData))
+          console.log('Full storeData:', storeData)
+          console.log('=========================================')
         }
 
         // Validate required store fields
@@ -220,6 +260,8 @@ export async function POST(request: NextRequest) {
             zona: storeData.zona,
             distrito: storeData.distrito,
             sucursal: storeData.sucursal,
+            calle: storeData.calle,
+            colonia: storeData.colonia,
             estado: storeData.estado,
             municipio: storeData.municipio,
             ciudad: storeData.ciudad,
@@ -227,6 +269,17 @@ export async function POST(request: NextRequest) {
             first_seen: currentDate,
             last_seen: currentDate
           })
+
+          // Debug: Verificar datos antes de insertar (solo primera tienda)
+          if (newStores.length === 1) {
+            console.log('=== FIRST NEW STORE DEBUG ===')
+            console.log('storeData.calle before push:', `"${storeData.calle}"`)
+            console.log('storeData.colonia before push:', `"${storeData.colonia}"`)
+            console.log('newStores[0] after push:', newStores[0])
+            console.log('newStores[0].calle:', `"${newStores[0].calle}"`)
+            console.log('newStores[0].colonia:', `"${newStores[0].colonia}"`)
+            console.log('=============================')
+          }
         }
 
         // Extract and process absolute metrics

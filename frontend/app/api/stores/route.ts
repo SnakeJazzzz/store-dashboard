@@ -65,6 +65,8 @@ export async function GET(request: NextRequest) {
       estado: store.estado,
       municipio: store.municipio,
       ciudad: store.ciudad,
+      calle: store.calle,
+      colonia: store.colonia,
       lat: store.lat,
       lon: store.lon,
       // Include metrics based on format
