@@ -365,14 +365,24 @@ export async function POST(request: NextRequest) {
     // STEP 4: Update last_seen for existing stores in this CSV (1 database call)
     const existingCsvSapCodes = csvSapCodes.filter(sap => existingStoreMap.has(sap))
     if (existingCsvSapCodes.length > 0) {
-      await supabase
+      console.log('Updating existing stores count:', existingCsvSapCodes.length)
+      console.log('First 10 SAP codes to update:', existingCsvSapCodes.slice(0, 10))
+      
+      const { error: updateError } = await supabase
         .from('stores')
         .update({ 
-          last_seen: currentDate, 
-          updated_at: new Date().toISOString() 
+          last_seen: currentDate
         })
         .eq('user_id', user.id)
         .in('suc_sap', existingCsvSapCodes)
+      
+      if (updateError) {
+        console.error('Error updating existing stores:', updateError)
+        errors.push(`Error actualizando tiendas existentes: ${updateError.message}`)
+        // Don't return error here, continue with the process
+      } else {
+        console.log('Successfully updated existing stores')
+      }
     }
 
     // STEP 5: Build complete store map (existing + newly inserted)

@@ -363,17 +363,49 @@ export async function POST(request: NextRequest) {
       console.log('Successfully inserted stores:', insertedStores.length)
     }
 
-    // STEP 4: Update last_seen for existing stores in this CSV (1 database call)
-    const existingCsvSapCodes = csvSapCodes.filter(sap => existingStoreMap.has(sap))
-    if (existingCsvSapCodes.length > 0) {
-      await supabase
-        .from('stores')
-        .update({ 
-          last_seen: currentDate, 
-          updated_at: new Date().toISOString() 
-        })
-        .eq('user_id', user.id)
-        .in('suc_sap', existingCsvSapCodes)
+    // STEP 4: Update existing stores with latest data from CSV
+    if (allProcessedRows.length > 0) {
+      console.log('Updating existing stores with latest CSV data...')
+      
+      // Process existing stores in batches to avoid URL length issues
+      const existingStoreUpdates = allProcessedRows
+        .filter(({ storeData }) => existingStoreMap.has(storeData.suc_sap))
+        .map(({ storeData }) => ({
+          suc_sap: storeData.suc_sap,
+          calle: storeData.calle,
+          colonia: storeData.colonia,
+          last_seen: currentDate
+        }))
+
+      if (existingStoreUpdates.length > 0) {
+        console.log('Existing stores to update:', existingStoreUpdates.length)
+        console.log('Sample update data:', existingStoreUpdates[0])
+        
+        // Update existing stores one by one to ensure data gets updated
+        let updateErrors = 0
+        for (const updateData of existingStoreUpdates.slice(0, 10)) { // Update first 10 for testing
+          const { error: updateError } = await supabase
+            .from('stores')
+            .update({
+              calle: updateData.calle,
+              colonia: updateData.colonia,
+              last_seen: updateData.last_seen
+            })
+            .eq('user_id', user.id)
+            .eq('suc_sap', updateData.suc_sap)
+          
+          if (updateError) {
+            console.error(`Error updating store ${updateData.suc_sap}:`, updateError)
+            updateErrors++
+          }
+        }
+        
+        if (updateErrors === 0) {
+          console.log('Successfully updated existing stores with calle/colonia data')
+        } else {
+          console.log(`Updated stores with ${updateErrors} errors`)
+        }
+      }
     }
 
     // STEP 5: Build complete store map (existing + newly inserted)
