@@ -1,4 +1,4 @@
-// app/api/geocode/route.ts
+// frontend/app/api/geocode/route.ts - OPTIMIZED VERSION
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
@@ -59,7 +59,11 @@ export async function POST(request: NextRequest) {
 
     // Parse request body
     const body = await request.json()
-    const { batchSize = 50, dryRun = false } = body
+    const { 
+      batchSize = 100,  // Increased default batch size
+      dryRun = false,
+      mode = 'smart'    // New: 'smart', 'all', or 'batch'
+    } = body
 
     console.log(`🗺️ Starting geocoding process for user: ${user.email}`)
 
@@ -68,6 +72,7 @@ export async function POST(request: NextRequest) {
       .from('stores')
       .select('id, suc_sap, sucursal, calle, colonia, ciudad, estado, cp, lat, lon')
       .or('lat.is.null,lon.is.null')
+      .eq('user_id', user.id)
 
     if (storesError) {
       console.error('Error fetching stores:', storesError)
@@ -80,27 +85,54 @@ export async function POST(request: NextRequest) {
     if (storesToGeocode.length === 0) {
       return NextResponse.json({
         success: true,
-        message: 'All stores already have coordinates',
+        message: 'All stores already have coordinates! 🎉',
         processed: 0,
-        errors: 0
+        errors: 0,
+        recommendations: [
+          'Your map should now display all stores',
+          'Future CSV uploads will only geocode new stores',
+          'Geocoding setup is complete!'
+        ]
       })
     }
 
-    // Limit batch size to avoid rate limits and timeouts
-    const processStores = storesToGeocode.slice(0, Math.min(batchSize, storesToGeocode.length))
-    console.log(`🔄 Processing batch of ${processStores.length} stores`)
+    // SMART MODE: Process all stores if it's the first time (< 600 stores)
+    // or use batch mode for incremental updates
+    let processStores = storesToGeocode
+    if (mode === 'smart') {
+      if (storesToGeocode.length <= 600) {
+        // First-time setup: process all stores
+        processStores = storesToGeocode
+        console.log(`🚀 SMART MODE: Processing all ${storesToGeocode.length} stores (first-time setup)`)
+      } else {
+        // Incremental mode: use batch size
+        processStores = storesToGeocode.slice(0, batchSize)
+        console.log(`🔄 SMART MODE: Processing batch of ${processStores.length} stores`)
+      }
+    } else if (mode === 'batch') {
+      processStores = storesToGeocode.slice(0, batchSize)
+    }
+    // mode === 'all': processStores = storesToGeocode (already set)
+
+    console.log(`🔄 Processing ${processStores.length} stores`)
 
     if (dryRun) {
       // Return what would be processed without actually doing it
       return NextResponse.json({
         dryRun: true,
+        mode: mode,
         totalStoresWithoutCoords: storesToGeocode.length,
+        willProcess: processStores.length,
+        estimatedTime: `${Math.ceil(processStores.length / 10)} seconds`,
+        costEstimate: `${processStores.length} API calls (${Math.round(processStores.length / 1000 * 100) / 100}% of free tier)`,
         sampleStores: processStores.slice(0, 5).map(s => ({
           suc_sap: s.suc_sap,
           address: buildFullAddress(s),
           current_coords: { lat: s.lat, lon: s.lon }
         })),
-        batchSize: processStores.length
+        recommendations: storesToGeocode.length <= 600 ? 
+          ['Use mode: "smart" to process all stores at once (recommended for first setup)'] :
+          ['Large dataset detected. Consider using batch mode for incremental processing.']
       })
     }
 
@@ -109,9 +141,14 @@ export async function POST(request: NextRequest) {
     const errors: string[] = []
     let successCount = 0
 
-    for (const store of processStores) {
+    console.log(`🔍 Starting geocoding of ${processStores.length} stores...`)
+    const startTime = Date.now()
+
+    for (let i = 0; i < processStores.length; i++) {
+      const store = processStores[i]
+      
       try {
-        console.log(`🏪 Processing: ${store.suc_sap} - ${store.sucursal}`)
+        console.log(`🏪 [${i + 1}/${processStores.length}] Processing: ${store.suc_sap} - ${store.sucursal}`)
         
         const address = buildFullAddress(store)
         console.log(`📍 Address: ${address}`)
@@ -130,7 +167,7 @@ export async function POST(request: NextRequest) {
         const geocodeResult = await geocodeAddress(address)
 
         if (geocodeResult.success && geocodeResult.lat && geocodeResult.lon) {
-          // Update store coordinates
+          // Update store coordinates - NOW WITH PROPER updated_at COLUMN
           const { error: updateError } = await supabase
             .from('stores')
             .update({
@@ -141,7 +178,7 @@ export async function POST(request: NextRequest) {
             .eq('id', store.id)
 
           if (updateError) {
-            console.error(`Error updating store ${store.suc_sap}:`, updateError)
+            console.error(`❌ Error updating store ${store.suc_sap}:`, updateError)
             results.push({
               store_id: store.id,
               suc_sap: store.suc_sap,
@@ -159,7 +196,7 @@ export async function POST(request: NextRequest) {
               mapbox_result: geocodeResult.place_name
             })
             successCount++
-            console.log(`✅ Success: ${store.suc_sap} → ${geocodeResult.lat}, ${geocodeResult.lon}`)
+            console.log(`✅ [${i + 1}/${processStores.length}] Success: ${store.suc_sap} → ${geocodeResult.lat}, ${geocodeResult.lon}`)
           }
         } else {
           results.push({
@@ -168,11 +205,19 @@ export async function POST(request: NextRequest) {
             success: false,
             error: geocodeResult.error || 'Geocoding failed'
           })
-          console.log(`❌ Failed: ${store.suc_sap} - ${geocodeResult.error}`)
+          console.log(`❌ [${i + 1}/${processStores.length}] Failed: ${store.suc_sap} - ${geocodeResult.error}`)
         }
 
         // Rate limiting: 100ms between requests (10 requests/second)
         await sleep(100)
+
+        // Progress update every 50 stores
+        if ((i + 1) % 50 === 0) {
+          const elapsed = Date.now() - startTime
+          const rate = (i + 1) / (elapsed / 1000)
+          const eta = (processStores.length - i - 1) / rate
+          console.log(`📊 Progress: ${i + 1}/${processStores.length} (${Math.round((i + 1) / processStores.length * 100)}%) | Rate: ${rate.toFixed(1)}/s | ETA: ${Math.round(eta)}s`)
+        }
 
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : 'Unknown error'
@@ -183,23 +228,49 @@ export async function POST(request: NextRequest) {
           error: errorMsg
         })
         errors.push(`Store ${store.suc_sap}: ${errorMsg}`)
-        console.error(`Error processing store ${store.suc_sap}:`, error)
+        console.error(`💥 Error processing store ${store.suc_sap}:`, error)
       }
     }
 
-    // STEP 3: Return summary
+    // STEP 3: Calculate final statistics
+    const totalTime = Date.now() - startTime
+    const remaining = storesToGeocode.length - processStores.length
+    const isComplete = remaining === 0
+
     const response = {
       success: true,
+      mode: mode,
       processed: processStores.length,
       successful: successCount,
       failed: processStores.length - successCount,
-      remaining: storesToGeocode.length - processStores.length,
+      remaining: remaining,
+      total_without_coords: storesToGeocode.length,
+      completion_percentage: Math.round((successCount / storesToGeocode.length) * 100),
       results: results,
       errors: errors.slice(0, 10), // Limit error list
-      nextBatchRecommended: storesToGeocode.length > processStores.length
+      performance: {
+        total_time_seconds: Math.round(totalTime / 1000),
+        rate_per_second: Math.round((processStores.length / totalTime) * 1000),
+        mapbox_calls_used: processStores.length
+      },
+      nextBatchRecommended: !isComplete && mode !== 'all',
+      isComplete: isComplete,
+      recommendations: isComplete ? [
+        '🎉 Geocoding complete! All stores now have coordinates.',
+        '🗺️ Your map should display all stores.',
+        '📊 Future CSV uploads will only geocode new stores.',
+        '🔄 Refresh your dashboard to see the updated map.'
+      ] : [
+        `⏭️ ${remaining} stores remaining to geocode.`,
+        '🔄 Run geocoding again to process remaining stores.',
+        `📊 ${Math.round((successCount / storesToGeocode.length) * 100)}% complete.`
+      ]
     }
 
     console.log(`🎯 Geocoding batch complete: ${successCount}/${processStores.length} successful`)
+    if (isComplete) {
+      console.log(`🏆 ALL GEOCODING COMPLETE! ${successCount} stores now have coordinates.`)
+    }
     
     return NextResponse.json(response)
 
